@@ -11,10 +11,8 @@ from kafka import KafkaProducer
 CASSANDRA_HOST = 'cassandra'
 KAFKA_HOST = 'broker:29092'
 TOPIC = 'cassandra_cdc.cassandra_data.tracking'
-POLL_INTERVAL = 0.5  # Thời gian chờ giữa các lần quét (giây)
+POLL_INTERVAL = 0.5  # Thời gian chờ giữa các lần quét
 OFFSET_FILE = '/app/last_scan.json'  # File lưu trữ thời gian quét cuối cùng
-
-# --- FUNCTIONS ---
 
 def json_serializer(data):
     return json.dumps(data).encode("utf-8")
@@ -87,11 +85,8 @@ def connect_to_cluster():
             print(f"⚠️ Connection failed (Cassandra not ready). Retrying in 5s...")
             time.sleep(5)
         except Exception as e:
-            # Lỗi kết nối Kafka hoặc lỗi khác
             print(f"⚠️ Connection failed (Generic Error: {e}). Retrying in 5s...")
             time.sleep(5)
-
-# --- MAIN LOGIC ---
 
 def main():
     cluster, session, producer = connect_to_cluster()
@@ -100,7 +95,6 @@ def main():
 
     try:
         while True:
-            # Lưu thời điểm bắt đầu vòng lặp này
             loop_start_time = datetime.now()
             
             cql = f"SELECT * FROM tracking WHERE ts > %s ALLOW FILTERING"
@@ -109,7 +103,6 @@ def main():
                 rows = session.execute(cql, (last_scan,))
                 sent = 0
                 
-                # Biến tạm để tìm max ts trong batch
                 current_batch_max_ts = last_scan
 
                 for row in rows:
@@ -133,12 +126,8 @@ def main():
                     # Có dữ liệu mới -> Cập nhật mốc thời gian theo dữ liệu đó
                     last_scan = current_batch_max_ts
                 else:
-                    # Không có dữ liệu mới -> Cập nhật mốc thời gian lên hiện tại 
-                    # (để lần sau không phải quét lại khoảng thời gian trống vừa rồi)
-                    # Trừ đi một chút buffer (ví dụ 1s) để an toàn
                     last_scan = loop_start_time
                 
-                # Luôn lưu trạng thái xuống file
                 save_last_scan_time(last_scan)
 
             except Exception as e:

@@ -50,86 +50,32 @@ schema_json = StructType([
     ]))
 ])
 
-# CALCULATION FUNCTIONS
-def calculating_clicks(df):
-    df_clicks = df.filter(col("custom_track") == "click")
-    df_clicks = df_clicks.fillna(0, subset=["bid", "job_id", "publisher_id", "group_id", "campaign_id"])
-    
-    clicks_output = df_clicks.groupBy(
-        col("job_id"), 
-        to_date(col("ts")).alias("dates"), 
-        hour(col("ts")).alias("hours"), 
-        col("publisher_id"), 
-        col("campaign_id"), 
-        col("group_id")
-    ).agg(
-        avg("bid").alias("bid_set"),
-        count("*").alias("clicks"),
-        sum("bid").alias("spend_hour")
-    )
-    return clicks_output
-
-def calculating_conversion(df):
-    df_conversion = df.filter(col("custom_track") == "conversion")
-    df_conversion = df_conversion.fillna(0, subset=["job_id", "publisher_id", "group_id", "campaign_id"])
-    
-    conversion_output = df_conversion.groupBy(
-        col("job_id"), 
-        to_date(col("ts")).alias("dates"), 
-        hour(col("ts")).alias("hours"), 
-        col("publisher_id"), 
-        col("campaign_id"), 
-        col("group_id")
-    ).agg(
-        count("*").alias("conversions")
-    )
-    return conversion_output
-
-def calculating_qualified(df):
-    df_qualified = df.filter(col("custom_track") == "qualified")
-    df_qualified = df_qualified.fillna(0, subset=["job_id", "publisher_id", "group_id", "campaign_id"])
-    
-    qualified_output = df_qualified.groupBy(
-        col("job_id"), 
-        to_date(col("ts")).alias("dates"), 
-        hour(col("ts")).alias("hours"), 
-        col("publisher_id"), 
-        col("campaign_id"), 
-        col("group_id")
-    ).agg(
-        count("*").alias("qualified")
-    )
-    return qualified_output
-
-def calculating_unqualified(df):
-    df_unqualified = df.filter(col("custom_track") == "unqualified")
-    df_unqualified = df_unqualified.fillna(0, subset=["job_id", "publisher_id", "group_id", "campaign_id"])
-    
-    unqualified_output = df_unqualified.groupBy(
-        col("job_id"), 
-        to_date(col("ts")).alias("dates"), 
-        hour(col("ts")).alias("hours"), 
-        col("publisher_id"), 
-        col("campaign_id"), 
-        col("group_id")
-    ).agg(
-        count("*").alias("unqualified")
-    )
-    return unqualified_output
-
-def process_final_data(clicks_output, conversion_output, qualified_output, unqualified_output):
-    final_data = clicks_output.join(conversion_output,['job_id','dates','hours','publisher_id','campaign_id','group_id'],'full')\
-        .join(qualified_output,['job_id','dates','hours','publisher_id','campaign_id','group_id'],'full')\
-        .join(unqualified_output,['job_id','dates','hours','publisher_id','campaign_id','group_id'],'full')
-    return final_data
-
 def process_cassandra_data(df):
-    clicks_output = calculating_clicks(df)
-    conversion_output = calculating_conversion(df)
-    qualified_output = calculating_qualified(df)
-    unqualified_output = calculating_unqualified(df)
-    final_data = process_final_data(clicks_output, conversion_output, qualified_output, unqualified_output)
-    final_data = final_data.fillna(0, subset=["clicks","conversions","qualified","unqualified","bid_set","spend_hour"])
+    df = df.fillna(0, subset=["job_id", "publisher_id", "group_id", "campaign_id"])
+    
+    final_data = df.groupBy(
+        col("job_id"), 
+        to_date(col("ts")).alias("dates"), 
+        hour(col("ts")).alias("hours"), 
+        col("publisher_id"), 
+        col("campaign_id"), 
+        col("group_id")
+    ).agg(
+        # Tính clicks
+        sum(when(col("custom_track") == "click", 1).otherwise(0)).alias("clicks"),
+        avg(when(col("custom_track") == "click", col("bid")).otherwise(None)).alias("bid_set"),
+        sum(when(col("custom_track") == "click", col("bid")).otherwise(0)).alias("spend_hour"),
+        
+        # Tính conversion
+        sum(when(col("custom_track") == "conversion", 1).otherwise(0)).alias("conversion"),
+        
+        # Tính qualified
+        sum(when(col("custom_track") == "qualified", 1).otherwise(0)).alias("qualified_application"),
+        
+        # Tính unqualified
+        sum(when(col("custom_track") == "unqualified", 1).otherwise(0)).alias("disqualified_application")
+    )
+    
     return final_data
 
 def retrieve_company_data():
@@ -145,10 +91,8 @@ def retrieve_company_data():
 
 def import_to_mysql(output):
     output = output.select('job_id','dates','hours','publisher_id','campaign_id','company_id','group_id',
-                           'unqualified','qualified','conversions','clicks','bid_set','spend_hour')
+                           'disqualified_application','qualified_application','conversion','clicks','bid_set','spend_hour')
     output = output.withColumn('updated_at', current_timestamp())
-    output = output.withColumnRenamed("qualified", "qualified_application").withColumnRenamed("unqualified", "disqualified_application")
-    output = output.withColumnRenamed("conversions", "conversion")
     output.write.format("jdbc") \
         .option("driver","com.mysql.cj.jdbc.Driver") \
         .option("url", "jdbc:mysql://mysql:3306/project_db") \
@@ -221,7 +165,6 @@ kafka_stream = spark.readStream \
 
 query = kafka_stream.writeStream \
     .foreachBatch(main_etl) \
-    .trigger(processingTime='1 seconds') \
     .start()
 
 query.awaitTermination()
